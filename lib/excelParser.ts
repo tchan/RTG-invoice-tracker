@@ -55,6 +55,66 @@ function parseDate(value: any): Date | string | null {
   return String(value);
 }
 
+function isValidDate(value: any): boolean {
+  if (value === null || value === undefined) return false;
+  
+  // If it's already a Date object
+  if (value instanceof Date) {
+    return !isNaN(value.getTime());
+  }
+  
+  // If it's a number (Excel date serial number)
+  if (typeof value === 'number') {
+    // Excel dates are days since 1900-01-01
+    // Valid Excel dates are typically between 1 (Jan 1, 1900) and ~50000 (year 2037+)
+    if (value < 1 || value > 100000) return false;
+    const excelEpoch = new Date(1899, 11, 30);
+    const date = new Date(excelEpoch.getTime() + value * 86400000);
+    return !isNaN(date.getTime());
+  }
+  
+  // Try to parse as string date
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') return false;
+    
+    // Try standard Date parsing
+    const parsed = new Date(trimmed);
+    if (!isNaN(parsed.getTime())) {
+      return true;
+    }
+    
+    // Try common date formats that Excel might use
+    // DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, etc.
+    const datePatterns = [
+      /^\d{1,2}\/\d{1,2}\/\d{4}$/,  // DD/MM/YYYY or MM/DD/YYYY
+      /^\d{1,2}-\d{1,2}-\d{4}$/,    // DD-MM-YYYY or MM-DD-YYYY
+      /^\d{4}-\d{1,2}-\d{1,2}$/,    // YYYY-MM-DD
+      /^\d{4}\/\d{1,2}\/\d{1,2}$/,  // YYYY/MM/DD
+    ];
+    
+    if (datePatterns.some(pattern => pattern.test(trimmed))) {
+      // Try parsing with different assumptions
+      const parts = trimmed.split(/[\/\-]/);
+      if (parts.length === 3) {
+        // Try YYYY-MM-DD first (ISO format)
+        if (parts[0].length === 4) {
+          const testDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+          if (!isNaN(testDate.getTime())) return true;
+        }
+        // Try DD/MM/YYYY or MM/DD/YYYY
+        const testDate1 = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+        const testDate2 = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
+        if (!isNaN(testDate1.getTime()) || !isNaN(testDate2.getTime())) {
+          return true;
+        }
+      }
+    }
+  }
+  
+  return false;
+}
+
 export function parseExcelBuffer(buffer: ArrayBuffer): ParsedInvoiceData {
   try {
     const data = new Uint8Array(buffer);
@@ -123,6 +183,19 @@ export function parseExcelBuffer(buffer: ArrayBuffer): ParsedInvoiceData {
     // Process data rows starting from the row after headers
     for (let i = headerRowIndex + 1; i < jsonData.length; i++) {
       const row = jsonData[i];
+      
+      // Check Column A (first column, index 0) - must be a valid date
+      const columnAValue = row[0];
+      const isValid = isValidDate(columnAValue);
+      
+      console.log(`Row ${i + 1}, Column A value:`, columnAValue, 'Type:', typeof columnAValue, 'IsValid:', isValid);
+      
+      if (!isValid) {
+        // Skip this row if Column A is not a valid date
+        console.log(`Skipping row ${i + 1} - Column A is not a valid date`);
+        continue;
+      }
+      
       const record: InvoiceRecord = {};
       
       headers.forEach((header, index) => {

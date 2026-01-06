@@ -45,28 +45,41 @@ export default function Home() {
   }, []);
 
   const handleFilesSelected = async (files: File[]) => {
-    if (files.length === 0) return;
+    console.log('handleFilesSelected called with', files.length, 'files');
+    
+    if (files.length === 0) {
+      console.warn('No files provided');
+      return;
+    }
 
     setIsUploading(true);
     setError(null);
 
     try {
+      console.log('Creating FormData and uploading files...');
       const formData = new FormData();
-      files.forEach(file => {
+      files.forEach((file, index) => {
+        console.log(`Adding file ${index + 1}:`, file.name, file.size, 'bytes');
         formData.append('files', file);
       });
 
+      console.log('Sending request to /api/upload');
       const response = await fetch('/api/upload', {
         method: 'POST',
         body: formData,
       });
 
+      console.log('Response status:', response.status, response.statusText);
+
       if (!response.ok) {
         const errorData = await response.json();
+        console.error('Upload failed:', errorData);
         throw new Error(errorData.error || 'Failed to upload files');
       }
 
+      console.log('Parsing response JSON...');
       const data: ParsedInvoiceData = await response.json();
+      console.log('Received data:', data.records.length, 'records,', data.columns.length, 'columns');
       
       // Convert date strings back to Date objects
       const processedRecords = data.records.map(record => {

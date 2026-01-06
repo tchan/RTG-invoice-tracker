@@ -47,13 +47,28 @@ export default function FileUpload({ onFilesSelected, isUploading }: FileUploadP
       file => file.name.endsWith('.xlsx') || file.name.endsWith('.xls')
     );
 
+    console.log('File input changed, files selected:', files.length);
+    
     if (files.length > 0) {
+      console.log('Calling onFilesSelected with', files.length, 'files');
       onFilesSelected(files);
+    } else {
+      console.warn('No valid Excel files selected');
+    }
+    
+    // Reset the input so the same file can be selected again
+    if (e.target) {
+      e.target.value = '';
     }
   };
 
-  const handleClick = () => {
-    fileInputRef.current?.click();
+  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isUploading && fileInputRef.current) {
+      console.log('File upload area clicked');
+      fileInputRef.current.click();
+    }
   };
 
   return (
