@@ -1,17 +1,24 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import FileUpload from '@/components/FileUpload';
 import InvoiceTable from '@/components/InvoiceTable';
 import InvoiceFilters from '@/components/InvoiceFilters';
+import ClientAddressManager from '@/components/ClientAddressManager';
 import { InvoiceRecord, ParsedInvoiceData, FilterState } from '@/lib/invoiceTypes';
 import { combineInvoiceData } from '@/lib/excelParser';
+import { calculateRoutesForInvoices } from '@/lib/routePlanner';
+import { getHomeAddress } from '@/lib/addressStorage';
 
 export default function Home() {
   const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
+  const [invoicesWithDistances, setInvoicesWithDistances] = useState<any[]>([]);
   const [columns, setColumns] = useState<string[]>([]);
   const [totalAmount, setTotalAmount] = useState<number>(0);
   const [isUploading, setIsUploading] = useState(false);
+  const [isCalculatingDistances, setIsCalculatingDistances] = useState(false);
+  const [showAddressManager, setShowAddressManager] = useState(false);
   const [filters, setFilters] = useState<FilterState>({
     lessonDate: null,
     clientName: null,
@@ -46,8 +53,25 @@ export default function Home() {
         } else {
           setTotalAmount(0);
         }
-        if (parsed.totalAmount !== undefined) {
-          setTotalAmount(parsed.totalAmount);
+        
+        // Try to recalculate distances if addresses are available
+        const homeAddress = getHomeAddress();
+        if (homeAddress && processedRecords.length > 0) {
+          setIsCalculatingDistances(true);
+          calculateRoutesForInvoices(processedRecords)
+            .then(invoicesWithKm => {
+              setInvoicesWithDistances(invoicesWithKm);
+              console.log('Recalculated distances for loaded invoices');
+            })
+            .catch(err => {
+              console.error('Error recalculating distances:', err);
+              setInvoicesWithDistances(processedRecords.map(inv => ({ ...inv, kilometers: 0 })));
+            })
+            .finally(() => {
+              setIsCalculatingDistances(false);
+            });
+        } else {
+          setInvoicesWithDistances(processedRecords.map(inv => ({ ...inv, kilometers: 0 })));
         }
       } catch (err) {
         console.error('Failed to load data from sessionStorage:', err);
@@ -204,6 +228,20 @@ export default function Home() {
         console.warn('combinedData.totalAmount is undefined');
       }
 
+      // Calculate kilometers if addresses are set
+      setIsCalculatingDistances(true);
+      try {
+        const invoicesWithKm = await calculateRoutesForInvoices(combinedData.records);
+        setInvoicesWithDistances(invoicesWithKm);
+        console.log('Calculated distances for', invoicesWithKm.length, 'invoices');
+      } catch (err) {
+        console.error('Error calculating distances:', err);
+        // Fallback to invoices without distances
+        setInvoicesWithDistances(combinedData.records.map(inv => ({ ...inv, kilometers: 0 })));
+      } finally {
+        setIsCalculatingDistances(false);
+      }
+
       // Save combined data to sessionStorage
       dataForStorage.totalAmount = combinedData.totalAmount;
       sessionStorage.setItem('invoiceData', JSON.stringify(dataForStorage));
@@ -216,8 +254,10 @@ export default function Home() {
     }
   };
 
+
   const handleClearData = () => {
     setInvoices([]);
+    setInvoicesWithDistances([]);
     setColumns([]);
     setTotalAmount(0);
     setFilters({ lessonDate: null, clientName: null });
@@ -228,10 +268,20 @@ export default function Home() {
     <main className="min-h-screen p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">RTG Invoice Tracker</h1>
-          <p className="text-gray-600">
-            Upload multiple Excel invoice spreadsheets and view them combined with filtering options.
-          </p>
+          <div className="flex justify-between items-start">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900 mb-2">RTG Invoice Tracker</h1>
+              <p className="text-gray-600">
+                Upload multiple Excel invoice spreadsheets and view them combined with filtering options.
+              </p>
+            </div>
+            <Link
+              href="/settings"
+              className="px-4 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              Settings
+            </Link>
+          </div>
         </div>
 
         {error && (
@@ -256,12 +306,20 @@ export default function Home() {
                   </p>
                 </div>
               </div>
-              <button
-                onClick={handleClearData}
-                className="px-4 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
-              >
-                Clear Data
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowAddressManager(true)}
+                  className="px-4 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                >
+                  Manage Addresses
+                </button>
+                <button
+                  onClick={handleClearData}
+                  className="px-4 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                >
+                  Clear Data
+                </button>
+              </div>
             </div>
 
             <InvoiceFilters
@@ -271,7 +329,17 @@ export default function Home() {
             />
 
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <InvoiceTable invoices={invoices} columns={columns} filters={filters} />
+              {isCalculatingDistances && (
+                <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                  <p className="text-sm text-blue-700">Calculating distances...</p>
+                </div>
+              )}
+              <InvoiceTable 
+                invoices={invoicesWithDistances.length > 0 ? invoicesWithDistances : invoices} 
+                columns={columns} 
+                filters={filters}
+                showKilometers={invoicesWithDistances.length > 0}
+              />
             </div>
           </>
         )}
@@ -281,6 +349,12 @@ export default function Home() {
             <p>No invoices loaded. Upload Excel files to get started.</p>
           </div>
         )}
+
+        <ClientAddressManager
+          invoices={invoices}
+          isOpen={showAddressManager}
+          onClose={() => setShowAddressManager(false)}
+        />
       </div>
     </main>
   );

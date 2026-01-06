@@ -7,22 +7,28 @@ interface InvoiceTableProps {
   invoices: InvoiceRecord[];
   columns: string[];
   filters: FilterState;
+  showKilometers?: boolean;
 }
 
-export default function InvoiceTable({ invoices, columns, filters }: InvoiceTableProps) {
+export default function InvoiceTable({ invoices, columns, filters, showKilometers = false }: InvoiceTableProps) {
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
-  // Filter to only show Lesson Date and Client Name columns
+  // Filter to only show Lesson Date and Client Name columns, plus Kilometers if enabled
   const displayColumns = useMemo(() => {
-    return columns.filter(col => {
+    const filtered = columns.filter(col => {
       const lower = col.toLowerCase();
       return lower.includes('lesson date') || 
              (lower.includes('date') && !lower.includes('time')) ||
              lower.includes('client name') || 
              lower.includes('client');
     });
-  }, [columns]);
+    // Add Kilometers column if enabled
+    if (showKilometers) {
+      filtered.push('Kilometers');
+    }
+    return filtered;
+  }, [columns, showKilometers]);
 
   // Filter invoices based on filters
   const filteredInvoices = useMemo(() => {
@@ -172,6 +178,22 @@ export default function InvoiceTable({ invoices, columns, filters }: InvoiceTabl
               return (
                 <tr key={index} className="hover:bg-gray-50">
                   {displayColumns.map(column => {
+                    // Handle Kilometers column specially
+                    if (column === 'Kilometers') {
+                      const kilometers = (invoice as any).kilometers;
+                      return (
+                        <td
+                          key={column}
+                          className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium"
+                        >
+                          {kilometers !== undefined && kilometers !== null && kilometers > 0 
+                            ? `${kilometers.toFixed(1)} km`
+                            : '-'
+                          }
+                        </td>
+                      );
+                    }
+                    
                     // Try to find the value - exact match, then case-insensitive, then partial match
                     let value = invoice[column];
                     
