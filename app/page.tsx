@@ -10,6 +10,7 @@ import { combineInvoiceData } from '@/lib/excelParser';
 export default function Home() {
   const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
   const [columns, setColumns] = useState<string[]>([]);
+  const [totalAmount, setTotalAmount] = useState<number>(0);
   const [isUploading, setIsUploading] = useState(false);
   const [filters, setFilters] = useState<FilterState>({
     lessonDate: null,
@@ -39,6 +40,15 @@ export default function Home() {
         });
         setInvoices(processedRecords);
         setColumns(parsed.columns);
+        console.log('Loaded totalAmount from sessionStorage:', parsed.totalAmount);
+        if (parsed.totalAmount !== undefined) {
+          setTotalAmount(parsed.totalAmount);
+        } else {
+          setTotalAmount(0);
+        }
+        if (parsed.totalAmount !== undefined) {
+          setTotalAmount(parsed.totalAmount);
+        }
       } catch (err) {
         console.error('Failed to load data from sessionStorage:', err);
       }
@@ -83,6 +93,7 @@ export default function Home() {
       console.log('=== UPLOAD DATA RECEIVED ===');
       console.log('Records:', newData.records.length, '| Columns:', newData.columns.length);
       console.log('Columns:', newData.columns);
+      console.log('Total Amount from API:', newData.totalAmount);
       
       // Log first few records with their raw date values
       if (newData.records.length > 0) {
@@ -149,13 +160,17 @@ export default function Home() {
       // Combine with existing data
       const existingData: ParsedInvoiceData = {
         records: invoices,
-        columns: columns
+        columns: columns,
+        totalAmount: totalAmount // Include existing total amount
       };
       
       const newDataForCombining: ParsedInvoiceData = {
         records: processedNewRecords,
-        columns: newData.columns
+        columns: newData.columns,
+        totalAmount: newData.totalAmount || 0 // Include new total amount
       };
+
+      console.log('Combining data - Existing totalAmount:', existingData.totalAmount, 'New totalAmount:', newDataForCombining.totalAmount);
 
       // Combine new data with existing data
       const combinedData = combineInvoiceData([existingData, newDataForCombining]);
@@ -181,9 +196,18 @@ export default function Home() {
 
       setInvoices(combinedData.records);
       setColumns(combinedData.columns);
+      console.log('Combined total amount:', combinedData.totalAmount);
+      if (combinedData.totalAmount !== undefined) {
+        setTotalAmount(combinedData.totalAmount);
+        console.log('Set totalAmount state to:', combinedData.totalAmount);
+      } else {
+        console.warn('combinedData.totalAmount is undefined');
+      }
 
       // Save combined data to sessionStorage
+      dataForStorage.totalAmount = combinedData.totalAmount;
       sessionStorage.setItem('invoiceData', JSON.stringify(dataForStorage));
+      console.log('Saved to sessionStorage with totalAmount:', dataForStorage.totalAmount);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred while uploading files');
       console.error('Upload error:', err);
@@ -195,6 +219,7 @@ export default function Home() {
   const handleClearData = () => {
     setInvoices([]);
     setColumns([]);
+    setTotalAmount(0);
     setFilters({ lessonDate: null, clientName: null });
     sessionStorage.removeItem('invoiceData');
   };
@@ -223,7 +248,14 @@ export default function Home() {
         {invoices.length > 0 && (
           <>
             <div className="mb-4 flex justify-between items-center">
-              <h2 className="text-xl font-semibold text-gray-900">Invoice Data</h2>
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Invoice Data</h2>
+                <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-md">
+                  <p className="text-xl font-bold text-green-700">
+                    Total Amount: ${totalAmount.toFixed(2)}
+                  </p>
+                </div>
+              </div>
               <button
                 onClick={handleClearData}
                 className="px-4 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"

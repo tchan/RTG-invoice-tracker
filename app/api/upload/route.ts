@@ -51,7 +51,8 @@ export async function POST(request: NextRequest) {
         });
         return serialized;
       }),
-      columns: combinedData.columns
+      columns: combinedData.columns,
+      totalAmount: combinedData.totalAmount
     };
     
     return NextResponse.json(serializedData);

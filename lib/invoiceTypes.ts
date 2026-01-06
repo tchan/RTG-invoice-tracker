@@ -7,6 +7,8 @@ export interface InvoiceRecord {
 export interface ParsedInvoiceData {
   records: InvoiceRecord[];
   columns: string[];
+  totalAmount?: number; // Sum of J2:J3 values
+  fileName?: string; // Optional filename for tracking
 }
 
 export interface FilterState {

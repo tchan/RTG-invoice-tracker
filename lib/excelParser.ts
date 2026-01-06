@@ -94,6 +94,25 @@ function parseDate(value: any): Date | string | null {
   return String(value);
 }
 
+function parseCurrencyValue(value: any): number {
+  if (value === null || value === undefined) return 0;
+  
+  // If it's already a number
+  if (typeof value === 'number') {
+    return value;
+  }
+  
+  // If it's a string, remove currency symbols and parse
+  if (typeof value === 'string') {
+    // Remove $, commas, and whitespace
+    const cleaned = value.replace(/[$,\s]/g, '');
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) ? 0 : parsed;
+  }
+  
+  return 0;
+}
+
 function isValidDate(value: any): boolean {
   if (value === null || value === undefined) return false;
   
@@ -275,9 +294,59 @@ export function parseExcelBuffer(buffer: ArrayBuffer): ParsedInvoiceData {
       }
     }
     
-    console.log(`Parsed ${records.length} records with ${headers.length} columns`);
+    // Extract value from J2:J3 merged cell (column J = index 9)
+    // For merged cells with formulas, we need to access the cell directly
+    let totalAmount = 0;
+    const columnJIndex = 9; // Column J is index 9 (0-based: A=0, B=1, ..., J=9)
     
-    return { records, columns: headers };
+    // Access the worksheet directly to get the merged cell value
+    // Row 2 = index 1 (0-based), Column J = index 9
+    const cellJ2 = worksheet[XLSX.utils.encode_cell({ r: 1, c: columnJIndex })];
+    
+    console.log('=== EXTRACTING J2:J3 MERGED CELL VALUE ===');
+    console.log('Cell J2 object:', cellJ2);
+    
+    if (cellJ2) {
+      // Check if it has a formula
+      if (cellJ2.f) {
+        console.log('Cell J2 has formula:', cellJ2.f);
+        console.log('Cell J2 calculated value (v):', cellJ2.v);
+        console.log('Cell J2 type:', cellJ2.t);
+      }
+      
+      // Get the value (v = calculated value, even for formulas)
+      if (cellJ2.v !== undefined && cellJ2.v !== null) {
+        const directValue = parseCurrencyValue(cellJ2.v);
+        totalAmount = directValue;
+        console.log(`J2:J3 merged cell value:`, cellJ2.v, '-> parsed as:', directValue);
+      } else {
+        console.warn('Cell J2 exists but has no value (v property)');
+        console.log('Cell J2 properties:', Object.keys(cellJ2));
+      }
+    } else {
+      console.warn('Cell J2 not found in worksheet');
+      // Try alternative cell references
+      const cellJ3 = worksheet[XLSX.utils.encode_cell({ r: 2, c: columnJIndex })];
+      console.log('Trying J3 instead:', cellJ3);
+      if (cellJ3 && cellJ3.v !== undefined && cellJ3.v !== null) {
+        const directValue = parseCurrencyValue(cellJ3.v);
+        totalAmount = directValue;
+        console.log(`J3 value:`, cellJ3.v, '-> parsed as:', directValue);
+      }
+    }
+    
+    // Also check the array method as fallback
+    if (totalAmount === 0) {
+      if (jsonData.length > 2 && jsonData[1] && jsonData[1][columnJIndex] !== undefined && jsonData[1][columnJIndex] !== null) {
+        const value1 = parseCurrencyValue(jsonData[1][columnJIndex]);
+        totalAmount = value1;
+        console.log(`Fallback: J2 from array:`, jsonData[1][columnJIndex], '->', value1);
+      }
+    }
+    
+    console.log(`Parsed ${records.length} records with ${headers.length} columns. Total amount (J2:J3 merged): $${totalAmount.toFixed(2)}`);
+    
+    return { records, columns: headers, totalAmount };
   } catch (error) {
     console.error('Parse error:', error);
     throw new Error(`Failed to parse Excel file: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -298,8 +367,14 @@ export function combineInvoiceData(dataArrays: ParsedInvoiceData[]): ParsedInvoi
   const combinedColumns = Array.from(allColumns);
   const combinedRecords: InvoiceRecord[] = [];
   
+  // Sum all total amounts
+  let combinedTotalAmount = 0;
+  
   // Combine all records
   dataArrays.forEach(data => {
+    if (data.totalAmount !== undefined) {
+      combinedTotalAmount += data.totalAmount;
+    }
     data.records.forEach(record => {
       const combinedRecord: InvoiceRecord = {};
       combinedColumns.forEach(col => {
@@ -311,7 +386,8 @@ export function combineInvoiceData(dataArrays: ParsedInvoiceData[]): ParsedInvoi
   
   return {
     records: combinedRecords,
-    columns: combinedColumns
+    columns: combinedColumns,
+    totalAmount: combinedTotalAmount
   };
 }
 
