@@ -13,6 +13,17 @@ export default function InvoiceTable({ invoices, columns, filters }: InvoiceTabl
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
+  // Filter to only show Lesson Date and Client Name columns
+  const displayColumns = useMemo(() => {
+    return columns.filter(col => {
+      const lower = col.toLowerCase();
+      return lower.includes('lesson date') || 
+             (lower.includes('date') && !lower.includes('time')) ||
+             lower.includes('client name') || 
+             lower.includes('client');
+    });
+  }, [columns]);
+
   // Filter invoices based on filters
   const filteredInvoices = useMemo(() => {
     return invoices.filter(invoice => {
@@ -115,13 +126,7 @@ export default function InvoiceTable({ invoices, columns, filters }: InvoiceTabl
     return String(value);
   };
 
-  const isHighlightedColumn = (column: string): boolean => {
-    const lower = column.toLowerCase();
-    return lower.includes('lesson date') || lower.includes('date') || 
-           lower.includes('client name') || lower.includes('client');
-  };
-
-  if (columns.length === 0) {
+  if (displayColumns.length === 0) {
     return (
       <div className="text-center py-8 text-gray-500">
         No data to display. Please upload Excel files.
@@ -137,13 +142,11 @@ export default function InvoiceTable({ invoices, columns, filters }: InvoiceTabl
       <table className="min-w-full divide-y divide-gray-200 border border-gray-200">
         <thead className="bg-gray-50">
           <tr>
-            {columns.map(column => (
+            {displayColumns.map(column => (
               <th
                 key={column}
                 onClick={() => handleSort(column)}
-                className={`px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 ${
-                  isHighlightedColumn(column) ? 'bg-blue-50' : ''
-                }`}
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 bg-blue-50"
               >
                 <div className="flex items-center gap-2">
                   {column}
@@ -160,25 +163,55 @@ export default function InvoiceTable({ invoices, columns, filters }: InvoiceTabl
         <tbody className="bg-white divide-y divide-gray-200">
           {sortedInvoices.length === 0 ? (
             <tr>
-              <td colSpan={columns.length} className="px-6 py-4 text-center text-gray-500">
+              <td colSpan={displayColumns.length} className="px-6 py-4 text-center text-gray-500">
                 No invoices match the current filters.
               </td>
             </tr>
           ) : (
-            sortedInvoices.map((invoice, index) => (
-              <tr key={index} className="hover:bg-gray-50">
-                {columns.map(column => (
-                  <td
-                    key={column}
-                    className={`px-6 py-4 whitespace-nowrap text-sm text-gray-900 ${
-                      isHighlightedColumn(column) ? 'font-medium' : ''
-                    }`}
-                  >
-                    {formatValue(invoice[column])}
-                  </td>
-                ))}
-              </tr>
-            ))
+            sortedInvoices.map((invoice, index) => {
+              return (
+                <tr key={index} className="hover:bg-gray-50">
+                  {displayColumns.map(column => {
+                    // Try to find the value - exact match, then case-insensitive, then partial match
+                    let value = invoice[column];
+                    
+                    if (value === undefined || value === null) {
+                      // Try case-insensitive exact match
+                      const exactMatch = Object.keys(invoice).find(
+                        key => key.toLowerCase().trim() === column.toLowerCase().trim()
+                      );
+                      if (exactMatch) {
+                        value = invoice[exactMatch];
+                      } else {
+                        // Try partial match for Lesson Date and Client Name
+                        const lowerColumn = column.toLowerCase();
+                        if (lowerColumn.includes('lesson date') || lowerColumn.includes('date')) {
+                          const dateKey = Object.keys(invoice).find(
+                            key => key.toLowerCase().includes('lesson date') || 
+                                   (key.toLowerCase().includes('date') && !key.toLowerCase().includes('time'))
+                          );
+                          if (dateKey) value = invoice[dateKey];
+                        } else if (lowerColumn.includes('client name') || lowerColumn.includes('client')) {
+                          const clientKey = Object.keys(invoice).find(
+                            key => key.toLowerCase().includes('client name') || key.toLowerCase().includes('client')
+                          );
+                          if (clientKey) value = invoice[clientKey];
+                        }
+                      }
+                    }
+                    
+                    return (
+                      <td
+                        key={column}
+                        className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium"
+                      >
+                        {formatValue(value)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>

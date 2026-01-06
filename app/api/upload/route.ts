@@ -21,8 +21,21 @@ export async function POST(request: NextRequest) {
     });
     const parsedDataArrays = await Promise.all(parsePromises);
     
+    // Log parsing results for debugging
+    console.log('Parsed files:', parsedDataArrays.map((data, idx) => ({
+      fileIndex: idx,
+      columns: data.columns,
+      recordCount: data.records.length
+    })));
+    
     // Combine all data
     const combinedData = combineInvoiceData(parsedDataArrays);
+    
+    console.log('Combined data:', {
+      totalColumns: combinedData.columns.length,
+      totalRecords: combinedData.records.length,
+      columns: combinedData.columns
+    });
     
     // Convert dates to ISO strings for JSON serialization
     const serializedData: ParsedInvoiceData = {
