@@ -62,9 +62,7 @@ export default function FileUpload({ onFilesSelected, isUploading }: FileUploadP
     }
   };
 
-  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleClick = () => {
     if (!isUploading && fileInputRef.current) {
       console.log('File upload area clicked');
       fileInputRef.current.click();
@@ -93,7 +91,7 @@ export default function FileUpload({ onFilesSelected, isUploading }: FileUploadP
         className="hidden"
         disabled={isUploading}
       />
-      <div className="space-y-2">
+      <div className="space-y-2 file-upload-content">
         <svg
           className="mx-auto h-12 w-12 text-gray-400"
           stroke="currentColor"
