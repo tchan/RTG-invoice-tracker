@@ -1,7 +1,7 @@
 import { InvoiceRecord } from '@/lib/invoiceTypes';
 import { DayRoute, TripLeg, InvoiceWithDistance } from '@/types/addressTypes';
 import { getHomeAddress, getClientAddress } from './addressStorage';
-import { calculateDistance } from './distanceCalculator';
+import { calculateDistanceMatrix, geocodeAddress } from './distanceCalculator';
 
 export async function calculateRoutesForInvoices(
   invoices: InvoiceRecord[]
@@ -61,16 +61,32 @@ export async function calculateRoutesForInvoices(
     invoicesByDate.get(dateKey)!.push(invoice);
   });
   
-  // Calculate routes for each day
+  // Calculate routes for each day using Matrix API for efficiency
   const invoicesWithDistances: InvoiceWithDistance[] = [];
   
   for (const [dateKey, dayInvoices] of invoicesByDate.entries()) {
     console.log(`Calculating routes for ${dateKey}, ${dayInvoices.length} invoices`);
     
-    // Process each invoice in order
-    // Track the last valid address we visited (for routing between clients)
-    let lastValidAddress: string | null = homeAddress;
+    // Build list of locations: [home, client1, client2, ..., clientN, home]
+    // Also track which invoice index corresponds to which location
+    const locations: [number, number][] = []; // [lng, lat] format for API
+    const locationToInvoice: Map<number, { invoice: InvoiceRecord; clientName: string; clientAddress: string }> = new Map();
+    const invoiceIndices: number[] = []; // Track original invoice indices
     
+    // Add home as first location (index 0)
+    const homeCoords = await geocodeAddress(homeAddress);
+    if (!homeCoords) {
+      console.error('Failed to geocode home address');
+      // Add all invoices with 0 distance
+      dayInvoices.forEach(inv => {
+        invoicesWithDistances.push({ ...inv, kilometers: 0 });
+      });
+      continue;
+    }
+    locations.push([homeCoords[1], homeCoords[0]]); // [lng, lat]
+    
+    // Add client locations
+    let locationIndex = 1;
     for (let i = 0; i < dayInvoices.length; i++) {
       const invoice = dayInvoices[i];
       const clientName = String(invoice[clientNameKey] || '').trim();
@@ -78,29 +94,87 @@ export async function calculateRoutesForInvoices(
       
       if (!clientAddress) {
         console.warn(`No address found for client: ${clientName}`);
-        invoicesWithDistances.push({ ...invoice, kilometers: 0 });
-        continue; // Skip this invoice but keep lastValidAddress
+        // Will add invoice with 0 distance later
+        continue;
       }
       
-      let distance = 0;
-      let tripLeg: TripLeg | undefined;
+      const clientCoords = await geocodeAddress(clientAddress);
+      if (!clientCoords) {
+        console.warn(`Failed to geocode client address: ${clientAddress}`);
+        continue;
+      }
       
-      // Calculate distance from last valid address to current client
-      if (lastValidAddress) {
-        const dist = await calculateDistance(lastValidAddress, clientAddress);
-        if (dist !== null) {
-          distance = dist;
-          tripLeg = {
-            from: lastValidAddress,
-            to: clientAddress,
-            distance: dist,
-            invoiceIndex: invoicesWithDistances.length
-          };
+      locations.push([clientCoords[1], clientCoords[0]]); // [lng, lat]
+      locationToInvoice.set(locationIndex, { invoice, clientName, clientAddress });
+      invoiceIndices.push(i);
+      locationIndex++;
+    }
+    
+    // Add home again as last location for return trip
+    locations.push([homeCoords[1], homeCoords[0]]);
+    const homeIndex = locations.length - 1;
+    
+    if (locations.length < 3) {
+      // Only home locations, no valid clients
+      dayInvoices.forEach(inv => {
+        invoicesWithDistances.push({ ...inv, kilometers: 0 });
+      });
+      continue;
+    }
+    
+    // Calculate distance matrix for all locations
+    const distanceMatrix = await calculateDistanceMatrix(locations);
+    
+    if (!distanceMatrix) {
+      console.error('Failed to calculate distance matrix');
+      dayInvoices.forEach(inv => {
+        invoicesWithDistances.push({ ...inv, kilometers: 0 });
+      });
+      continue;
+    }
+    
+    // Process invoices and calculate distances
+    let currentLocationIndex = 0; // Start at home (index 0)
+    
+    for (let i = 0; i < dayInvoices.length; i++) {
+      const invoice = dayInvoices[i];
+      const clientName = String(invoice[clientNameKey] || '').trim();
+      const clientAddress = getClientAddress(clientName);
+      
+      if (!clientAddress) {
+        invoicesWithDistances.push({ ...invoice, kilometers: 0 });
+        continue;
+      }
+      
+      // Find the location index for this client
+      let clientLocationIndex = -1;
+      for (const [idx, info] of locationToInvoice.entries()) {
+        if (info.clientName === clientName) {
+          clientLocationIndex = idx;
+          break;
         }
       }
       
-      // Check if this is the last invoice of the day (with valid address)
-      // Find if there are any more invoices with valid addresses after this one
+      if (clientLocationIndex === -1) {
+        invoicesWithDistances.push({ ...invoice, kilometers: 0 });
+        continue;
+      }
+      
+      // Calculate distance from current location to client
+      let distance = 0;
+      let tripLeg: TripLeg | undefined;
+      
+      if (distanceMatrix[currentLocationIndex] && distanceMatrix[currentLocationIndex][clientLocationIndex] !== undefined) {
+        distance = distanceMatrix[currentLocationIndex][clientLocationIndex] / 1000; // Convert meters to km
+        tripLeg = {
+          from: currentLocationIndex === 0 ? homeAddress : locationToInvoice.get(currentLocationIndex)!.clientAddress,
+          to: clientAddress,
+          distance: distance,
+          invoiceIndex: invoicesWithDistances.length
+        };
+      }
+      
+      // Check if this is the last valid invoice
       let isLastValidInvoice = true;
       for (let j = i + 1; j < dayInvoices.length; j++) {
         const nextClientName = String(dayInvoices[j][clientNameKey] || '').trim();
@@ -111,29 +185,28 @@ export async function calculateRoutesForInvoices(
       }
       
       if (isLastValidInvoice) {
-        // Last trip: client → home
-        const dist = await calculateDistance(clientAddress, homeAddress);
-        if (dist !== null) {
-          distance += dist;
-          // Update tripLeg to include return trip
+        // Add return trip to home
+        if (distanceMatrix[clientLocationIndex] && distanceMatrix[clientLocationIndex][homeIndex] !== undefined) {
+          const returnDistance = distanceMatrix[clientLocationIndex][homeIndex] / 1000; // Convert meters to km
+          distance += returnDistance;
           if (tripLeg) {
             tripLeg = {
               ...tripLeg,
-              distance: tripLeg.distance + dist
+              distance: tripLeg.distance + returnDistance
             };
           } else {
             tripLeg = {
               from: clientAddress,
               to: homeAddress,
-              distance: dist,
+              distance: returnDistance,
               invoiceIndex: invoicesWithDistances.length
             };
           }
         }
       }
       
-      // Update lastValidAddress for next iteration
-      lastValidAddress = clientAddress;
+      // Update current location for next iteration
+      currentLocationIndex = clientLocationIndex;
       
       invoicesWithDistances.push({
         ...invoice,

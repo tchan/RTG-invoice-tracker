@@ -2,16 +2,23 @@
 
 import { useState, useEffect } from 'react';
 import { getHomeAddress, setHomeAddress } from '@/lib/addressStorage';
+import { getOrsApiKey, setOrsApiKey } from '@/lib/distanceCalculator';
 import Link from 'next/link';
 
 export default function SettingsPage() {
   const [homeAddress, setHomeAddressState] = useState<string>('');
+  const [apiKey, setApiKeyState] = useState<string>('');
   const [saved, setSaved] = useState(false);
+  const [apiKeySaved, setApiKeySaved] = useState(false);
 
   useEffect(() => {
     const savedAddress = getHomeAddress();
     if (savedAddress) {
       setHomeAddressState(savedAddress);
+    }
+    const savedApiKey = getOrsApiKey();
+    if (savedApiKey) {
+      setApiKeyState(savedApiKey);
     }
   }, []);
 
@@ -20,6 +27,14 @@ export default function SettingsPage() {
       setHomeAddress(homeAddress.trim());
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
+    }
+  };
+
+  const handleSaveApiKey = () => {
+    if (apiKey.trim()) {
+      setOrsApiKey(apiKey.trim());
+      setApiKeySaved(true);
+      setTimeout(() => setApiKeySaved(false), 3000);
     }
   };
 
@@ -76,6 +91,59 @@ export default function SettingsPage() {
               <div className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded-md">
                 <p className="text-sm text-gray-600">
                   <span className="font-medium">Current address:</span> {homeAddress}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+          <h2 className="text-xl font-semibold text-gray-900 mb-4">OpenRouteService API Key</h2>
+          <p className="text-sm text-gray-600 mb-4">
+            A free API key is required to calculate distances. Sign up at{' '}
+            <a 
+              href="https://openrouteservice.org/dev/#/signup" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-800 underline"
+            >
+              openrouteservice.org
+            </a>
+            {' '}to get your free API key. The free tier includes generous rate limits.
+          </p>
+          
+          <div className="space-y-4">
+            <div>
+              <label htmlFor="api-key" className="block text-sm font-medium text-gray-700 mb-2">
+                API Key
+              </label>
+              <input
+                id="api-key"
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKeyState(e.target.value)}
+                placeholder="Enter your OpenRouteService API key"
+                className="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            
+            <div className="flex items-center gap-4">
+              <button
+                onClick={handleSaveApiKey}
+                className="px-6 py-2 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              >
+                Save API Key
+              </button>
+              
+              {apiKeySaved && (
+                <span className="text-sm text-green-600 font-medium">✓ API key saved!</span>
+              )}
+            </div>
+            
+            {apiKey && (
+              <div className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded-md">
+                <p className="text-sm text-gray-600">
+                  <span className="font-medium">API key is set.</span> {apiKey.length > 0 ? `(${apiKey.substring(0, 8)}...)` : ''}
                 </p>
               </div>
             )}
