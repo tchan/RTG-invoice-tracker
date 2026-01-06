@@ -45,10 +45,49 @@ function parseDate(value: any): Date | string | null {
   
   // Try to parse as string date
   if (typeof value === 'string') {
-    const parsed = new Date(value);
-    if (!isNaN(parsed.getTime())) {
-      return parsed;
+    const trimmed = value.trim();
+    
+    // Check for DD/MM/YYYY or DD-MM-YYYY format (always parse as day/month/year)
+    // This must be checked FIRST before any other parsing
+    const ddmmyyyyPattern = /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/;
+    const match = trimmed.match(ddmmyyyyPattern);
+    
+    if (match) {
+      const firstPart = parseInt(match[1], 10);
+      const secondPart = parseInt(match[2], 10);
+      const year = parseInt(match[3], 10);
+      
+      // Always interpret as DD/MM/YYYY (first part = day, second part = month)
+      // Even if it could be MM/DD, we treat it as DD/MM
+      const day = firstPart;
+      const month = secondPart;
+      
+      // Validate month range
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        const date = new Date(year, month - 1, day);
+        // Verify the date is valid (handles cases like 31/02)
+        if (!isNaN(date.getTime()) && date.getDate() === day && date.getMonth() === month - 1) {
+          return date;
+        }
+      }
     }
+    
+    // Check for YYYY-MM-DD or YYYY/MM/DD format (ISO format)
+    const yyyymmddPattern = /^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/;
+    const isoMatch = trimmed.match(yyyymmddPattern);
+    
+    if (isoMatch) {
+      const year = parseInt(isoMatch[1], 10);
+      const month = parseInt(isoMatch[2], 10);
+      const day = parseInt(isoMatch[3], 10);
+      const date = new Date(year, month - 1, day);
+      if (!isNaN(date.getTime())) {
+        return date;
+      }
+    }
+    
+    // Don't use standard Date parsing as fallback - it interprets as MM/DD/YYYY
+    // If we can't parse it explicitly, return as string
   }
   
   // Return as string if can't parse
@@ -125,10 +164,11 @@ export function parseExcelBuffer(buffer: ArrayBuffer): ParsedInvoiceData {
     const worksheet = workbook.Sheets[firstSheetName];
     
     // Read as array to access specific rows
+    // Use raw: true to get raw values, then we'll parse dates ourselves
     const jsonData = XLSX.utils.sheet_to_json(worksheet, { 
       header: 1,
       defval: null,
-      raw: false,
+      raw: true,  // Get raw values so we can parse dates ourselves as DD/MM/YYYY
       blankrows: true // Keep blank rows to maintain row numbers
     }) as any[][];
     
@@ -188,7 +228,15 @@ export function parseExcelBuffer(buffer: ArrayBuffer): ParsedInvoiceData {
       const columnAValue = row[0];
       const isValid = isValidDate(columnAValue);
       
-      console.log(`Row ${i + 1}, Column A value:`, columnAValue, 'Type:', typeof columnAValue, 'IsValid:', isValid);
+      // Debug: log the raw value and how it's being parsed
+      if (i < headerRowIndex + 5) { // Only log first few rows to avoid spam
+        console.log(`Row ${i + 1}, Column A raw value:`, columnAValue, 'Type:', typeof columnAValue);
+        if (typeof columnAValue === 'number') {
+          const excelEpoch = new Date(1899, 11, 30);
+          const dateFromSerial = new Date(excelEpoch.getTime() + columnAValue * 86400000);
+          console.log(`  -> Excel serial ${columnAValue} converts to:`, dateFromSerial.toLocaleDateString());
+        }
+      }
       
       if (!isValid) {
         // Skip this row if Column A is not a valid date
