@@ -5,6 +5,7 @@ import FileUpload from '@/components/FileUpload';
 import InvoiceTable from '@/components/InvoiceTable';
 import InvoiceFilters from '@/components/InvoiceFilters';
 import { InvoiceRecord, ParsedInvoiceData, FilterState } from '@/lib/invoiceTypes';
+import { combineInvoiceData } from '@/lib/excelParser';
 
 export default function Home() {
   const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
@@ -78,11 +79,11 @@ export default function Home() {
       }
 
       console.log('Parsing response JSON...');
-      const data: ParsedInvoiceData = await response.json();
-      console.log('Received data:', data.records.length, 'records,', data.columns.length, 'columns');
+      const newData: ParsedInvoiceData = await response.json();
+      console.log('Received new data:', newData.records.length, 'records,', newData.columns.length, 'columns');
       
-      // Convert date strings back to Date objects
-      const processedRecords = data.records.map(record => {
+      // Convert date strings back to Date objects for new data
+      const processedNewRecords = newData.records.map(record => {
         const processed: InvoiceRecord = {};
         Object.keys(record).forEach(key => {
           const value = record[key];
@@ -96,11 +97,44 @@ export default function Home() {
         return processed;
       });
 
-      setInvoices(processedRecords);
-      setColumns(data.columns);
+      // Combine with existing data
+      const existingData: ParsedInvoiceData = {
+        records: invoices,
+        columns: columns
+      };
+      
+      const newDataForCombining: ParsedInvoiceData = {
+        records: processedNewRecords,
+        columns: newData.columns
+      };
 
-      // Save to sessionStorage
-      sessionStorage.setItem('invoiceData', JSON.stringify(data));
+      // Combine new data with existing data
+      const combinedData = combineInvoiceData([existingData, newDataForCombining]);
+      
+      console.log('Combined data:', combinedData.records.length, 'total records,', combinedData.columns.length, 'columns');
+
+      // Convert dates to ISO strings for sessionStorage
+      const dataForStorage: ParsedInvoiceData = {
+        records: combinedData.records.map(record => {
+          const serialized: any = {};
+          Object.keys(record).forEach(key => {
+            const value = record[key];
+            if (value instanceof Date) {
+              serialized[key] = value.toISOString();
+            } else {
+              serialized[key] = value;
+            }
+          });
+          return serialized;
+        }),
+        columns: combinedData.columns
+      };
+
+      setInvoices(combinedData.records);
+      setColumns(combinedData.columns);
+
+      // Save combined data to sessionStorage
+      sessionStorage.setItem('invoiceData', JSON.stringify(dataForStorage));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred while uploading files');
       console.error('Upload error:', err);
