@@ -281,18 +281,12 @@ export default function Home() {
   };
 
   const handleRefreshDistance = async (invoiceIndex: number) => {
-    console.log('handleRefreshDistance called with index:', invoiceIndex);
-    console.log('invoicesWithDistances length:', invoicesWithDistances.length);
-
     const invoice = invoicesWithDistances[invoiceIndex];
     if (!invoice) {
-      console.error('No invoice found at index:', invoiceIndex);
       return;
     }
-    console.log('Invoice found:', invoice);
 
     const homeAddress = getHomeAddress();
-    console.log('Home address:', homeAddress);
     if (!homeAddress) {
       setError('Home address not set. Please set it in Manage Addresses.');
       return;
@@ -302,16 +296,13 @@ export default function Home() {
     const clientNameKey = Object.keys(invoice).find(
       key => key.toLowerCase().includes('client name') || key.toLowerCase().includes('client')
     );
-    console.log('Client name key:', clientNameKey);
     if (!clientNameKey) {
       setError('Could not find client name in invoice');
       return;
     }
 
     const clientName = String(invoice[clientNameKey] || '').trim();
-    console.log('Client name:', clientName);
     const clientAddress = getClientAddress(clientName);
-    console.log('Client address:', clientAddress);
 
     if (!clientAddress) {
       setError(`No address set for client: ${clientName}. Please set it in Manage Addresses.`);

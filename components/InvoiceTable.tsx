@@ -17,20 +17,12 @@ export default function InvoiceTable({ invoices, columns, filters, showKilometer
   const [refreshingIndex, setRefreshingIndex] = useState<number | null>(null);
 
   const handleRefreshClick = async (index: number) => {
-    console.log('Refresh clicked for index:', index);
-    if (refreshingIndex !== null) {
-      console.log('Already refreshing, ignoring click');
-      return;
-    }
-    if (index === -1) {
-      console.error('Invalid index -1, cannot refresh');
+    if (refreshingIndex !== null || index === -1) {
       return;
     }
     setRefreshingIndex(index);
     try {
-      console.log('Calling onRefreshDistance with index:', index);
       await onRefreshDistance?.(index);
-      console.log('onRefreshDistance completed');
     } finally {
       setRefreshingIndex(null);
     }
@@ -116,8 +108,6 @@ export default function InvoiceTable({ invoices, columns, filters, showKilometer
         const bRaw = (b as any).kilometers;
         aValue = typeof aRaw === 'number' ? aRaw : parseFloat(aRaw) || 0;
         bValue = typeof bRaw === 'number' ? bRaw : parseFloat(bRaw) || 0;
-
-        console.log('Comparing kilometers:', { aRaw, bRaw, aValue, bValue, typeA: typeof aRaw, typeB: typeof bRaw });
 
         return sortDirection === 'asc' ? aValue - bValue : bValue - aValue;
       }
