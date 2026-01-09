@@ -256,7 +256,7 @@ export default function InvoiceTable({ invoices, columns, filters, showKilometer
                           key={column}
                           className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium"
                         >
-                          {kilometers !== undefined && kilometers !== null && kilometers > 0
+                          {kilometers !== undefined && kilometers !== null
                             ? `${kilometers.toFixed(1)} km`
                             : '-'
                           }

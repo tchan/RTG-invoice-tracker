@@ -243,8 +243,26 @@ export default function Home() {
       return;
     }
 
+    // Find the date column
+    const dateKey = columns.find(
+      col => col.toLowerCase().includes('lesson date') ||
+             (col.toLowerCase().includes('date') && !col.toLowerCase().includes('time'))
+    );
+
+    // Sort by date before export
+    const sortedData = [...dataToExport].sort((a, b) => {
+      if (!dateKey) return 0;
+      const aDate = a[dateKey];
+      const bDate = b[dateKey];
+      if (!aDate) return 1;
+      if (!bDate) return -1;
+      const aTime = aDate instanceof Date ? aDate.getTime() : new Date(aDate as string).getTime();
+      const bTime = bDate instanceof Date ? bDate.getTime() : new Date(bDate as string).getTime();
+      return aTime - bTime;
+    });
+
     // Prepare data for export - convert dates and include kilometers
-    const exportData = dataToExport.map(record => {
+    const exportData = sortedData.map(record => {
       const exportRecord: Record<string, unknown> = {};
 
       // Add all columns
