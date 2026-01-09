@@ -7,9 +7,20 @@ import InvoiceTable from '@/components/InvoiceTable';
 import InvoiceFilters from '@/components/InvoiceFilters';
 import ClientAddressManager from '@/components/ClientAddressManager';
 import { InvoiceRecord, ParsedInvoiceData, FilterState } from '@/lib/invoiceTypes';
-import { combineInvoiceData } from '@/lib/excelParser';
 import { calculateRoutesForInvoices } from '@/lib/routePlanner';
-import { getHomeAddress } from '@/lib/addressStorage';
+import { getHomeAddress, getClientAddress, loadAddressesFromDb } from '@/lib/addressStorage';
+import { calculateDistance } from '@/lib/distanceCalculator';
+import { UploadResponse } from './api/upload/route';
+import { DiffResult } from '@/lib/database';
+import * as XLSX from 'xlsx';
+
+interface DiffModalState {
+  isOpen: boolean;
+  filename: string;
+  existingFileId: number;
+  diff: DiffResult;
+  newData: ParsedInvoiceData;
+}
 
 export default function Home() {
   const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
@@ -17,6 +28,7 @@ export default function Home() {
   const [columns, setColumns] = useState<string[]>([]);
   const [totalAmount, setTotalAmount] = useState<number>(0);
   const [isUploading, setIsUploading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [isCalculatingDistances, setIsCalculatingDistances] = useState(false);
   const [showAddressManager, setShowAddressManager] = useState(false);
   const [filters, setFilters] = useState<FilterState>({
@@ -24,19 +36,36 @@ export default function Home() {
     clientName: null,
   });
   const [error, setError] = useState<string | null>(null);
+  const [notifications, setNotifications] = useState<string[]>([]);
+  const [diffModal, setDiffModal] = useState<DiffModalState | null>(null);
 
-  // Load data from sessionStorage on mount
+  // Load data from database on mount
   useEffect(() => {
-    const storedData = sessionStorage.getItem('invoiceData');
-    if (storedData) {
-      try {
-        const parsed: ParsedInvoiceData = JSON.parse(storedData);
+    const initializeData = async () => {
+      // Load addresses from database first (to populate localStorage)
+      await loadAddressesFromDb();
+      // Then load invoices
+      await loadInvoicesFromDatabase();
+    };
+    initializeData();
+  }, []);
+
+  const loadInvoicesFromDatabase = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/invoices');
+      if (!response.ok) {
+        throw new Error('Failed to load invoices');
+      }
+
+      const data = await response.json();
+
+      if (data.records && data.records.length > 0) {
         // Convert date strings back to Date objects
-        const processedRecords = parsed.records.map(record => {
+        const processedRecords = data.records.map((record: InvoiceRecord) => {
           const processed: InvoiceRecord = {};
           Object.keys(record).forEach(key => {
             const value = record[key];
-            // Check if it's a date string (ISO format)
             if (typeof value === 'string' && value.match(/^\d{4}-\d{2}-\d{2}T/)) {
               processed[key] = new Date(value);
             } else {
@@ -45,207 +74,88 @@ export default function Home() {
           });
           return processed;
         });
+
         setInvoices(processedRecords);
-        setColumns(parsed.columns);
-        console.log('Loaded totalAmount from sessionStorage:', parsed.totalAmount);
-        if (parsed.totalAmount !== undefined) {
-          setTotalAmount(parsed.totalAmount);
-        } else {
-          setTotalAmount(0);
-        }
-        
-        // Try to recalculate distances if addresses are available
+        setColumns(data.columns || []);
+        setTotalAmount(data.totalAmount || 0);
+
+        // Calculate distances if home address is set
         const homeAddress = getHomeAddress();
         if (homeAddress && processedRecords.length > 0) {
           setIsCalculatingDistances(true);
-          calculateRoutesForInvoices(processedRecords)
-            .then(invoicesWithKm => {
-              setInvoicesWithDistances(invoicesWithKm);
-              console.log('Recalculated distances for loaded invoices');
-            })
-            .catch(err => {
-              console.error('Error recalculating distances:', err);
-              setInvoicesWithDistances(processedRecords.map(inv => ({ ...inv, kilometers: 0 })));
-            })
-            .finally(() => {
-              setIsCalculatingDistances(false);
-            });
+          try {
+            const invoicesWithKm = await calculateRoutesForInvoices(processedRecords);
+            setInvoicesWithDistances(invoicesWithKm);
+          } catch (err) {
+            console.error('Error calculating distances:', err);
+            setInvoicesWithDistances(processedRecords.map((inv: InvoiceRecord) => ({ ...inv, kilometers: 0 })));
+          } finally {
+            setIsCalculatingDistances(false);
+          }
         } else {
-          setInvoicesWithDistances(processedRecords.map(inv => ({ ...inv, kilometers: 0 })));
+          setInvoicesWithDistances(processedRecords.map((inv: InvoiceRecord) => ({ ...inv, kilometers: 0 })));
         }
-      } catch (err) {
-        console.error('Failed to load data from sessionStorage:', err);
       }
+    } catch (err) {
+      console.error('Failed to load invoices from database:', err);
+      setError('Failed to load saved invoices');
+    } finally {
+      setIsLoading(false);
     }
-  }, []);
+  };
 
   const handleFilesSelected = async (files: File[]) => {
-    console.log('handleFilesSelected called with', files.length, 'files');
-    
-    if (files.length === 0) {
-      console.warn('No files provided');
-      return;
-    }
+    if (files.length === 0) return;
 
     setIsUploading(true);
     setError(null);
+    setNotifications([]);
 
     try {
-      console.log('Creating FormData and uploading files...');
       const formData = new FormData();
-      files.forEach((file, index) => {
-        console.log(`Adding file ${index + 1}:`, file.name, file.size, 'bytes');
+      files.forEach(file => {
         formData.append('files', file);
       });
 
-      console.log('Sending request to /api/upload');
       const response = await fetch('/api/upload', {
         method: 'POST',
         body: formData,
       });
 
-      console.log('Response status:', response.status, response.statusText);
-
       if (!response.ok) {
         const errorData = await response.json();
-        console.error('Upload failed:', errorData);
         throw new Error(errorData.error || 'Failed to upload files');
       }
 
-      console.log('Parsing response JSON...');
-      const newData: ParsedInvoiceData = await response.json();
-      console.log('=== UPLOAD DATA RECEIVED ===');
-      console.log('Records:', newData.records.length, '| Columns:', newData.columns.length);
-      console.log('Columns:', newData.columns);
-      console.log('Total Amount from API:', newData.totalAmount);
-      
-      // Log first few records with their raw date values
-      if (newData.records.length > 0) {
-        console.log('\n=== FIRST 3 RECORDS (RAW DATA) ===');
-        newData.records.slice(0, 3).forEach((record, idx) => {
-          console.log(`Record ${idx + 1}:`, record);
-          // Find date column
-          const dateKey = Object.keys(record).find(
-            key => key.toLowerCase().includes('lesson date') || key.toLowerCase().includes('date')
-          );
-          if (dateKey) {
-            console.log(`  ${dateKey}:`, record[dateKey], '(type:', typeof record[dateKey], ')');
-          }
-        });
-      }
-      
-      // Convert date strings back to Date objects for new data
-      const processedNewRecords = newData.records.map((record, recordIndex) => {
-        const processed: InvoiceRecord = {};
-        Object.keys(record).forEach(key => {
-          const value = record[key];
-          // Check if it's a date string (ISO format)
-          if (typeof value === 'string' && value.match(/^\d{4}-\d{2}-\d{2}T/)) {
-            const dateObj = new Date(value);
-            // Log date parsing for Lesson Date column (first few records)
-            if (recordIndex < 5 && (key.toLowerCase().includes('lesson date') || key.toLowerCase().includes('date'))) {
-              console.log(`Record ${recordIndex + 1}, ${key}:`, {
-                originalString: value,
-                parsedDate: dateObj.toLocaleDateString('en-GB'), // DD/MM/YYYY format
-                isoString: dateObj.toISOString(),
-                day: dateObj.getDate(),
-                month: dateObj.getMonth() + 1,
-                year: dateObj.getFullYear()
-              });
-            }
-            processed[key] = dateObj;
-          } else {
-            processed[key] = value;
-          }
-        });
-        return processed;
-      });
-      
-      // Log sample of first record
-      if (processedNewRecords.length > 0) {
-        console.log('Sample processed record (first record):', processedNewRecords[0]);
-        const lessonDateKey = Object.keys(processedNewRecords[0]).find(
-          key => key.toLowerCase().includes('lesson date') || key.toLowerCase().includes('date')
-        );
-        if (lessonDateKey) {
-          const dateValue = processedNewRecords[0][lessonDateKey];
-          if (dateValue instanceof Date) {
-            console.log(`First record ${lessonDateKey}:`, {
-              dateObject: dateValue,
-              display: dateValue.toLocaleDateString('en-GB'),
-              day: dateValue.getDate(),
-              month: dateValue.getMonth() + 1,
-              year: dateValue.getFullYear()
-            });
-          }
+      const { results } = await response.json() as { results: UploadResponse[] };
+
+      const newNotifications: string[] = [];
+      let hasNewData = false;
+
+      for (const result of results) {
+        if (result.status === 'duplicate') {
+          newNotifications.push(result.message || 'Duplicate file detected');
+        } else if (result.status === 'diff' && result.diffInfo) {
+          // Show diff modal for this file
+          setDiffModal({
+            isOpen: true,
+            filename: result.diffInfo.filename,
+            existingFileId: result.diffInfo.existingFileId,
+            diff: result.diffInfo.diff,
+            newData: result.diffInfo.newData
+          });
+        } else if (result.status === 'success') {
+          newNotifications.push(result.message || 'File uploaded successfully');
+          hasNewData = true;
         }
       }
 
-      // Combine with existing data
-      const existingData: ParsedInvoiceData = {
-        records: invoices,
-        columns: columns,
-        totalAmount: totalAmount // Include existing total amount
-      };
-      
-      const newDataForCombining: ParsedInvoiceData = {
-        records: processedNewRecords,
-        columns: newData.columns,
-        totalAmount: newData.totalAmount || 0 // Include new total amount
-      };
+      setNotifications(newNotifications);
 
-      console.log('Combining data - Existing totalAmount:', existingData.totalAmount, 'New totalAmount:', newDataForCombining.totalAmount);
-
-      // Combine new data with existing data
-      const combinedData = combineInvoiceData([existingData, newDataForCombining]);
-      
-      console.log('Combined data:', combinedData.records.length, 'total records,', combinedData.columns.length, 'columns');
-
-      // Convert dates to ISO strings for sessionStorage
-      const dataForStorage: ParsedInvoiceData = {
-        records: combinedData.records.map(record => {
-          const serialized: any = {};
-          Object.keys(record).forEach(key => {
-            const value = record[key];
-            if (value instanceof Date) {
-              serialized[key] = value.toISOString();
-            } else {
-              serialized[key] = value;
-            }
-          });
-          return serialized;
-        }),
-        columns: combinedData.columns
-      };
-
-      setInvoices(combinedData.records);
-      setColumns(combinedData.columns);
-      console.log('Combined total amount:', combinedData.totalAmount);
-      if (combinedData.totalAmount !== undefined) {
-        setTotalAmount(combinedData.totalAmount);
-        console.log('Set totalAmount state to:', combinedData.totalAmount);
-      } else {
-        console.warn('combinedData.totalAmount is undefined');
+      // Reload data from database if any new files were added
+      if (hasNewData) {
+        await loadInvoicesFromDatabase();
       }
-
-      // Calculate kilometers if addresses are set
-      setIsCalculatingDistances(true);
-      try {
-        const invoicesWithKm = await calculateRoutesForInvoices(combinedData.records);
-        setInvoicesWithDistances(invoicesWithKm);
-        console.log('Calculated distances for', invoicesWithKm.length, 'invoices');
-      } catch (err) {
-        console.error('Error calculating distances:', err);
-        // Fallback to invoices without distances
-        setInvoicesWithDistances(combinedData.records.map(inv => ({ ...inv, kilometers: 0 })));
-      } finally {
-        setIsCalculatingDistances(false);
-      }
-
-      // Save combined data to sessionStorage
-      dataForStorage.totalAmount = combinedData.totalAmount;
-      sessionStorage.setItem('invoiceData', JSON.stringify(dataForStorage));
-      console.log('Saved to sessionStorage with totalAmount:', dataForStorage.totalAmount);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred while uploading files');
       console.error('Upload error:', err);
@@ -254,14 +164,209 @@ export default function Home() {
     }
   };
 
+  const handleDiffAction = async (action: 'replace' | 'merge' | 'cancel') => {
+    if (!diffModal) return;
 
-  const handleClearData = () => {
-    setInvoices([]);
-    setInvoicesWithDistances([]);
-    setColumns([]);
-    setTotalAmount(0);
-    setFilters({ lessonDate: null, clientName: null });
-    sessionStorage.removeItem('invoiceData');
+    if (action === 'cancel') {
+      setDiffModal(null);
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/invoices', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action,
+          fileId: diffModal.existingFileId,
+          filename: diffModal.filename,
+          newData: diffModal.newData
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to update file');
+      }
+
+      setDiffModal(null);
+      setNotifications([`File "${diffModal.filename}" ${action === 'replace' ? 'replaced' : 'merged'} successfully`]);
+      await loadInvoicesFromDatabase();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update file');
+    }
+  };
+
+  const handleClearData = async () => {
+    if (!confirm('Are you sure you want to clear all invoice data? This cannot be undone.')) {
+      return;
+    }
+
+    try {
+      // Get all files and delete them
+      const response = await fetch('/api/invoices');
+      const data = await response.json();
+
+      for (const file of data.files || []) {
+        await fetch('/api/invoices', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileId: file.id }),
+        });
+      }
+
+      setInvoices([]);
+      setInvoicesWithDistances([]);
+      setColumns([]);
+      setTotalAmount(0);
+      setFilters({ lessonDate: null, clientName: null });
+      setNotifications(['All data cleared']);
+    } catch (err) {
+      setError('Failed to clear data');
+    }
+  };
+
+  const formatRecordForDisplay = (record: InvoiceRecord): string => {
+    const date = record['Lesson Date'];
+    const client = record['Client Name'];
+    const dateStr = date instanceof Date ? date.toLocaleDateString() : String(date || 'N/A');
+    return `${dateStr} - ${client || 'Unknown'}`;
+  };
+
+  const handleExportToExcel = () => {
+    const dataToExport = invoicesWithDistances.length > 0 ? invoicesWithDistances : invoices;
+
+    if (dataToExport.length === 0) {
+      setError('No data to export');
+      return;
+    }
+
+    // Prepare data for export - convert dates and include kilometers
+    const exportData = dataToExport.map(record => {
+      const exportRecord: Record<string, unknown> = {};
+
+      // Add all columns
+      columns.forEach(col => {
+        const value = record[col];
+        if (value instanceof Date) {
+          exportRecord[col] = value.toLocaleDateString('en-AU');
+        } else {
+          exportRecord[col] = value;
+        }
+      });
+
+      // Add kilometers column
+      exportRecord['Kilometers'] = record.kilometers || 0;
+
+      return exportRecord;
+    });
+
+    // Create worksheet
+    const worksheet = XLSX.utils.json_to_sheet(exportData);
+
+    // Create workbook
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Invoices');
+
+    // Generate filename with date
+    const today = new Date().toISOString().split('T')[0];
+    const filename = `invoices_export_${today}.xlsx`;
+
+    // Download file
+    XLSX.writeFile(workbook, filename);
+
+    setNotifications([`Exported ${exportData.length} records to ${filename}`]);
+  };
+
+  const handleRefreshDistance = async (invoiceIndex: number) => {
+    console.log('handleRefreshDistance called with index:', invoiceIndex);
+    console.log('invoicesWithDistances length:', invoicesWithDistances.length);
+
+    const invoice = invoicesWithDistances[invoiceIndex];
+    if (!invoice) {
+      console.error('No invoice found at index:', invoiceIndex);
+      return;
+    }
+    console.log('Invoice found:', invoice);
+
+    const homeAddress = getHomeAddress();
+    console.log('Home address:', homeAddress);
+    if (!homeAddress) {
+      setError('Home address not set. Please set it in Manage Addresses.');
+      return;
+    }
+
+    // Find client name from the invoice
+    const clientNameKey = Object.keys(invoice).find(
+      key => key.toLowerCase().includes('client name') || key.toLowerCase().includes('client')
+    );
+    console.log('Client name key:', clientNameKey);
+    if (!clientNameKey) {
+      setError('Could not find client name in invoice');
+      return;
+    }
+
+    const clientName = String(invoice[clientNameKey] || '').trim();
+    console.log('Client name:', clientName);
+    const clientAddress = getClientAddress(clientName);
+    console.log('Client address:', clientAddress);
+
+    if (!clientAddress) {
+      setError(`No address set for client: ${clientName}. Please set it in Manage Addresses.`);
+      return;
+    }
+
+    setNotifications([`Refreshing distance for ${clientName}...`]);
+
+    try {
+      // Calculate distance from home to client (skip cache to force fresh calculation)
+      const distanceToClient = await calculateDistance(homeAddress, clientAddress, true);
+      // Calculate distance from client back to home (skip cache to force fresh calculation)
+      const distanceToHome = await calculateDistance(clientAddress, homeAddress, true);
+
+      let totalDistance = 0;
+      if (distanceToClient !== null) {
+        totalDistance += distanceToClient;
+      }
+      if (distanceToHome !== null) {
+        totalDistance += distanceToHome;
+      }
+
+      const kilometers = Math.round(totalDistance * 10) / 10;
+
+      // Save to database if we have a record ID
+      const dbId = (invoice as any)._dbId;
+      if (dbId && kilometers > 0) {
+        try {
+          await fetch('/api/invoices/kilometers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ recordId: dbId, kilometers })
+          });
+        } catch (saveErr) {
+          console.error('Error saving kilometers to database:', saveErr);
+        }
+      }
+
+      // Update the invoice with the new distance
+      const updatedInvoices = [...invoicesWithDistances];
+      updatedInvoices[invoiceIndex] = {
+        ...invoice,
+        kilometers
+      };
+      setInvoicesWithDistances(updatedInvoices);
+
+      if (totalDistance > 0) {
+        setNotifications([`Distance updated for ${clientName}: ${totalDistance.toFixed(1)} km`]);
+      } else {
+        setError(`Failed to calculate distance for ${clientName}. Check the console for details.`);
+      }
+    } catch (err) {
+      console.error('Error refreshing distance:', err);
+      setError(`Failed to refresh distance: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
   };
 
   return (
@@ -286,8 +391,41 @@ export default function Home() {
 
         {error && (
           <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
-            <p className="font-medium">Error:</p>
-            <p>{error}</p>
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="font-medium">Error:</p>
+                <p>{error}</p>
+              </div>
+              <button
+                onClick={() => setError(null)}
+                className="text-red-500 hover:text-red-700"
+              >
+                &times;
+              </button>
+            </div>
+          </div>
+        )}
+
+        {notifications.length > 0 && (
+          <div className="mb-6 space-y-2">
+            {notifications.map((notification, idx) => (
+              <div
+                key={idx}
+                className={`p-4 rounded-lg flex justify-between items-center ${
+                  notification.includes('already uploaded')
+                    ? 'bg-yellow-50 border border-yellow-200 text-yellow-700'
+                    : 'bg-green-50 border border-green-200 text-green-700'
+                }`}
+              >
+                <p>{notification}</p>
+                <button
+                  onClick={() => setNotifications(notifications.filter((_, i) => i !== idx))}
+                  className="ml-4 text-current opacity-50 hover:opacity-100"
+                >
+                  &times;
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
@@ -295,18 +433,33 @@ export default function Home() {
           <FileUpload onFilesSelected={handleFilesSelected} isUploading={isUploading} />
         </div>
 
-        {invoices.length > 0 && (
+        {isLoading ? (
+          <div className="text-center py-12 text-gray-500">
+            <p>Loading saved invoices...</p>
+          </div>
+        ) : invoices.length > 0 ? (
           <>
             <div className="mb-4 flex justify-between items-center">
               <div>
                 <h2 className="text-xl font-semibold text-gray-900">Invoice Data</h2>
-                <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-md">
+                <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-md flex gap-6">
                   <p className="text-xl font-bold text-green-700">
                     Total Amount: ${totalAmount.toFixed(2)}
                   </p>
+                  {invoicesWithDistances.length > 0 && (
+                    <p className="text-xl font-bold text-blue-700">
+                      Total Kilometers: {invoicesWithDistances.reduce((sum, inv) => sum + (inv.kilometers || 0), 0).toFixed(1)} km
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="flex gap-2">
+                <button
+                  onClick={handleExportToExcel}
+                  className="px-4 py-2 text-sm font-medium text-green-700 bg-green-50 border border-green-200 rounded-md hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+                >
+                  Export to Excel
+                </button>
                 <button
                   onClick={() => setShowAddressManager(true)}
                   className="px-4 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
@@ -334,17 +487,16 @@ export default function Home() {
                   <p className="text-sm text-blue-700">Calculating distances...</p>
                 </div>
               )}
-              <InvoiceTable 
-                invoices={invoicesWithDistances.length > 0 ? invoicesWithDistances : invoices} 
-                columns={columns} 
+              <InvoiceTable
+                invoices={invoicesWithDistances.length > 0 ? invoicesWithDistances : invoices}
+                columns={columns}
                 filters={filters}
                 showKilometers={invoicesWithDistances.length > 0}
+                onRefreshDistance={handleRefreshDistance}
               />
             </div>
           </>
-        )}
-
-        {invoices.length === 0 && !isUploading && (
+        ) : (
           <div className="text-center py-12 text-gray-500">
             <p>No invoices loaded. Upload Excel files to get started.</p>
           </div>
@@ -355,8 +507,114 @@ export default function Home() {
           isOpen={showAddressManager}
           onClose={() => setShowAddressManager(false)}
         />
+
+        {/* Diff Modal */}
+        {diffModal?.isOpen && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden">
+              <div className="p-6 border-b border-gray-200">
+                <h2 className="text-xl font-semibold text-gray-900">
+                  File Changes Detected
+                </h2>
+                <p className="mt-1 text-sm text-gray-600">
+                  The file "{diffModal.filename}" has different content than the previously uploaded version.
+                </p>
+              </div>
+
+              <div className="p-6 overflow-y-auto max-h-[50vh]">
+                <div className="space-y-4">
+                  {diffModal.diff.added.length > 0 && (
+                    <div>
+                      <h3 className="font-medium text-green-700 mb-2">
+                        New Records ({diffModal.diff.added.length})
+                      </h3>
+                      <ul className="text-sm text-gray-600 space-y-1 pl-4">
+                        {diffModal.diff.added.slice(0, 5).map((record, idx) => (
+                          <li key={idx} className="text-green-600">
+                            + {formatRecordForDisplay(record)}
+                          </li>
+                        ))}
+                        {diffModal.diff.added.length > 5 && (
+                          <li className="text-gray-500">
+                            ... and {diffModal.diff.added.length - 5} more
+                          </li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
+
+                  {diffModal.diff.removed.length > 0 && (
+                    <div>
+                      <h3 className="font-medium text-red-700 mb-2">
+                        Removed Records ({diffModal.diff.removed.length})
+                      </h3>
+                      <ul className="text-sm text-gray-600 space-y-1 pl-4">
+                        {diffModal.diff.removed.slice(0, 5).map((record, idx) => (
+                          <li key={idx} className="text-red-600">
+                            - {formatRecordForDisplay(record)}
+                          </li>
+                        ))}
+                        {diffModal.diff.removed.length > 5 && (
+                          <li className="text-gray-500">
+                            ... and {diffModal.diff.removed.length - 5} more
+                          </li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
+
+                  {diffModal.diff.modified.length > 0 && (
+                    <div>
+                      <h3 className="font-medium text-yellow-700 mb-2">
+                        Modified Records ({diffModal.diff.modified.length})
+                      </h3>
+                      <ul className="text-sm text-gray-600 space-y-1 pl-4">
+                        {diffModal.diff.modified.slice(0, 5).map((mod, idx) => (
+                          <li key={idx} className="text-yellow-600">
+                            ~ {formatRecordForDisplay(mod.new)}
+                          </li>
+                        ))}
+                        {diffModal.diff.modified.length > 5 && (
+                          <li className="text-gray-500">
+                            ... and {diffModal.diff.modified.length - 5} more
+                          </li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
+
+                  {diffModal.diff.unchanged > 0 && (
+                    <p className="text-sm text-gray-500">
+                      {diffModal.diff.unchanged} records unchanged
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-6 border-t border-gray-200 bg-gray-50 flex justify-end gap-3">
+                <button
+                  onClick={() => handleDiffAction('cancel')}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleDiffAction('merge')}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700"
+                >
+                  Merge (Add New Only)
+                </button>
+                <button
+                  onClick={() => handleDiffAction('replace')}
+                  className="px-4 py-2 text-sm font-medium text-white bg-orange-600 rounded-md hover:bg-orange-700"
+                >
+                  Replace All
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );
 }
-
